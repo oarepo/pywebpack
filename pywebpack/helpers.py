@@ -106,17 +106,32 @@ def max_version(v1, v2):
     return v1 if v1_maj > v2_maj else v2
 
 
-def merge_deps(computed_deps, incoming_deps):
+def merge_deps(
+    computed_deps,
+    incoming_deps,
+    incoming_label=None,
+    origins=None,
+    return_origins=False,
+):
     """Merge NPM dependencies.
 
     :param computed_deps: dict with all computed deps,
         after merging incoming deps into it.
     :param incoming_deps: new incoming deps to be merged
         into `computed_deps`.
-    :return: the computed_deps dict with merged `incoming_deps` into it.
+    :param incoming_label: optional label identifying the source of
+        incoming_deps.
+    :param origins: optional dict tracking the source label for each
+        package, keyed by `(dep_type, pkg_name)`.
+    :param return_origins: returns `(omputed_deps, origins)` if true.
+    :return: the computed_deps dict with merged `incoming_deps` into it,
+        or a tuple with the updated origins when `return_origins` is set.
     :raise: raises the MergeConflictError exception when deps
         cannot be merged.
     """
+    if origins is None:
+        origins = {}
+
     dep_types = ["dependencies", "devDependencies", "peerDependencies"]
     for dep_type in dep_types:
         computed_deps.setdefault(dep_type, {})
@@ -127,17 +142,32 @@ def merge_deps(computed_deps, incoming_deps):
                 if incoming_pkg in computed:
                     computed_version = computed[incoming_pkg]
 
+                    computed_origin = ""
+                    if (dep_type, incoming_pkg) in origins:
+                        computed_origin = f" (from {origins[(dep_type, incoming_pkg)]})"
+
                     v_maj, _, _, _ = _parse_version(incoming_version)
                     tv_maj, _, _, _ = _parse_version(computed_version)
                     if v_maj != tv_maj:
-                        raise MergeConflictError(
-                            f"Incompatible major versions for package {incoming_pkg}: current version is {computed_version}, incoming version is {incoming_version}"
+                        incoming_src = (
+                            f" (from {incoming_label})" if incoming_label else ""
                         )
+                        msg = (
+                            f"Incompatible major versions for package {incoming_pkg}: "
+                            f"current version is {computed_version}{computed_origin}, "
+                            f"incoming version is {incoming_version}{incoming_src}"
+                        )
+                        raise MergeConflictError(msg)
 
                     _max = max_version(incoming_version, computed_version)
+                    if _max == incoming_version:
+                        origins[(dep_type, incoming_pkg)] = incoming_label
                     computed[incoming_pkg] = _max
                 else:
                     computed[incoming_pkg] = incoming_version
+                    origins[(dep_type, incoming_pkg)] = incoming_label
+    if return_origins:
+        return computed_deps, origins
     return computed_deps
 
 
