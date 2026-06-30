@@ -16,6 +16,7 @@ from pywebpack.errors import MergeConflictError
 # - `^\D*`: ignores the first not numberic char (major version), e.g. ~ or <
 # - minor and patch versions are optional
 SEM_VER = r"^\D*(?P<major>0|[1-9]\d*)\.?(?P<minor>0|[1-9]\d*)?\.?(?P<patch>0|[1-9]\d*)?(?:-(?P<prerelease>(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\.(?:0|[1-9]\d*|\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\+(?P<buildmetadata>[0-9a-zA-Z-]+(?:\.[0-9a-zA-Z-]+)*))?$"
+LOCAL_PATH = r"^(?:\.\.?/)+[^/].*$"
 
 
 def _load_ep(ep):
@@ -66,11 +67,24 @@ def _parse_version(version):
     return int(major), int(minor), int(patch), prerelease
 
 
+def _is_local_path(version):
+    """Local path."""
+    return re.match(LOCAL_PATH, version) is not None
+
+
 def max_version(v1, v2):
     """Given 2 semver strings, return the max version.
 
     Complies with specification: <https://semver.org/#spec-item-11>.
     """
+    v1_is_local = _is_local_path(v1)
+    v2_is_local = _is_local_path(v2)
+
+    if v1_is_local or v2_is_local:
+        if v1_is_local and v2_is_local and v1 != v2:
+            raise ValueError(f"Cannot compare local paths: {v1} and {v2}.")
+        return v1 if v1_is_local else v2
+
     v1_maj, v1_min, v1_patch, v1_pre = _parse_version(v1)
     v2_maj, v2_min, v2_patch, v2_pre = _parse_version(v2)
 
@@ -146,6 +160,29 @@ def merge_deps(
                     if (dep_type, incoming_pkg) in origins:
                         computed_origin = f" (from {origins[(dep_type, incoming_pkg)]})"
 
+                    incoming_is_local = _is_local_path(incoming_version)
+                    computed_is_local = _is_local_path(computed_version)
+
+                    if incoming_is_local or computed_is_local:
+                        if (
+                            incoming_is_local
+                            and computed_is_local
+                            and incoming_version != computed_version
+                        ):
+                            incoming_src = (
+                                f" (from {incoming_label})" if incoming_label else ""
+                            )
+                            msg = (
+                                f"\nIncompatible local paths for package: {incoming_pkg}\n"
+                                f"Current version is {computed_version}{computed_origin}\n"
+                                f"Incoming version is {incoming_version}{incoming_src}\n"
+                            )
+                            raise MergeConflictError(msg)
+                        if incoming_is_local:
+                            origins[(dep_type, incoming_pkg)] = incoming_label
+                            computed[incoming_pkg] = incoming_version
+                        continue
+
                     v_maj, _, _, _ = _parse_version(incoming_version)
                     tv_maj, _, _, _ = _parse_version(computed_version)
                     if v_maj != tv_maj:
@@ -153,9 +190,9 @@ def merge_deps(
                             f" (from {incoming_label})" if incoming_label else ""
                         )
                         msg = (
-                            f"Incompatible major versions for package {incoming_pkg}: "
-                            f"current version is {computed_version}{computed_origin}, "
-                            f"incoming version is {incoming_version}{incoming_src}"
+                            f"\nIncompatible major versions for package: {incoming_pkg}\n"
+                            f"current version is {computed_version}{computed_origin}\n"
+                            f"incoming version is {incoming_version}{incoming_src}\n"
                         )
                         raise MergeConflictError(msg)
 
