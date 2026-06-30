@@ -18,7 +18,7 @@ from pywebpack import (
     WebpackTemplateProject,
 )
 from pywebpack.errors import MergeConflictError
-from pywebpack.helpers import max_version, merge_deps
+from pywebpack.helpers import _is_local_path, max_version, merge_deps
 
 
 def json_from_file(filepath):
@@ -54,10 +54,40 @@ def test_version():
         ("1.0.0-beta.2", "1.0.0-beta.11", "1.0.0-beta.11"),
         ("1.0.0-beta.11", "1.0.0-rc.1", "1.0.0-rc.1"),
         ("1.0.0-rc.1", "1.0.0", "1.0.0"),
+        # a local path always wins over a semver version
+        ("../mypkg", "1.0.0", "../mypkg"),
+        ("1.0.0", "../mypkg", "../mypkg"),
+        ("./mypkg", "2.0.0", "./mypkg"),
+        # two identical local paths are not a conflict
+        ("../mypkg", "../mypkg", "../mypkg"),
     ],
 )
 def test_max_version(v1, v2, expected):
     assert max_version(v1, v2) == expected
+
+
+def test_max_version_incompatible_local_paths():
+    with pytest.raises(ValueError):
+        max_version("../mypkg", "../otherpkg")
+
+
+@pytest.mark.parametrize(
+    "version,expected",
+    [
+        ("../mypkg", True),
+        ("./mypkg", True),
+        ("../../foo/bar", True),
+        ("1.0.0", False),
+        ("^2.0.1", False),
+        ("~3.2.1", False),
+        ("mypkg", False),
+        # absolute paths and the npm file: protocol are not treated as local
+        ("/abs/path", False),
+        ("file:../mypkg", False),
+    ],
+)
+def test_is_local_path(version, expected):
+    assert _is_local_path(version) is expected
 
 
 @pytest.mark.parametrize(
@@ -118,6 +148,36 @@ def test_max_version(v1, v2, expected):
                 "peerDependencies": {},
             },
         ),
+        # an incoming local path overrides an existing semver version
+        (
+            {"dependencies": {"mypkg": "1.0.0"}},
+            {"dependencies": {"mypkg": "../mypkg"}},
+            {
+                "dependencies": {"mypkg": "../mypkg"},
+                "devDependencies": {},
+                "peerDependencies": {},
+            },
+        ),
+        # an existing local path is kept over an incoming semver version
+        (
+            {"dependencies": {"mypkg": "../mypkg"}},
+            {"dependencies": {"mypkg": "1.0.0"}},
+            {
+                "dependencies": {"mypkg": "../mypkg"},
+                "devDependencies": {},
+                "peerDependencies": {},
+            },
+        ),
+        # two identical local paths merge without conflict
+        (
+            {"dependencies": {"mypkg": "../mypkg"}},
+            {"dependencies": {"mypkg": "../mypkg"}},
+            {
+                "dependencies": {"mypkg": "../mypkg"},
+                "devDependencies": {},
+                "peerDependencies": {},
+            },
+        ),
     ],
 )
 def test_merge_deps(target, source, expected):
@@ -129,6 +189,14 @@ def test_merge_deps_incompat_major():
         merge_deps(
             {"dependencies": {"mypkg": "3.3.1"}},
             {"dependencies": {"mypkg": "4.2.1"}},
+        )
+
+
+def test_merge_deps_incompat_local_paths():
+    with pytest.raises(MergeConflictError):
+        merge_deps(
+            {"dependencies": {"mypkg": "../mypkg"}},
+            {"dependencies": {"mypkg": "../otherpkg"}},
         )
 
 
